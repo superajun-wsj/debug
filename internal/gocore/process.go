@@ -435,6 +435,7 @@ func (p *Process) readSpans(mheap region, arenas []arena) {
 		min := core.Address(s.Field("startAddr").Uintptr())
 		elemSize := int64(s.Field("elemsize").Uintptr())
 		nPages := int64(s.Field("npages").Uintptr())
+		noscan := (s.Field("spanclass").Uint8())&1 != 0
 		spanSize := nPages * pageSize
 		max := min.Add(spanSize)
 		for a := min; a != max; a = a.Add(pageSize) {
@@ -495,6 +496,7 @@ func (p *Process) readSpans(mheap region, arenas []arena) {
 				h := p.allocHeapInfo(a)
 				h.base = min
 				h.size = elemSize
+				h.noscan = noscan
 			}
 
 			// Process special records.

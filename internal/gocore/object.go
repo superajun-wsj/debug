@@ -334,6 +334,7 @@ type heapInfo struct {
 	size     int64        // size of objects in the span
 	mark     uint64       // 64 mark bits, one for every 8 bytes
 	firstIdx int          // the index of the first object that starts in this region, or -1 if none
+	noscan   bool         // no pointer at all
 	// For 64-bit inferiors, ptr[0] contains 64 pointer bits, one
 	// for every 8 bytes.  On 32-bit inferiors, ptr contains 128
 	// pointer bits, one for every 4 bytes.
