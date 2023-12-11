@@ -737,6 +737,21 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 					add(ptr, typ, 1)
 				}
 			}
+			// hchan.buf(in chan) is an unsafe.pointer to an [dataqsiz]elemtype.
+			if strings.HasPrefix(t.Name, "hchan<") && f.Name == "buf" && f.Type.Kind == KindPtr {
+				elemType := p.proc.ReadPtr(a.Add(t.field("elemtype").Off))
+				buf := a.Add(t.field("buf").Off)
+				rTyp := p.runtimeType2Type(elemType, buf)
+				dataqsiz := p.proc.ReadUintptr(a.Add(t.field("dataqsiz").Off))
+				typ := &Type{
+					Name:  fmt.Sprintf("[%d]%s", int64(dataqsiz), rTyp.Name),
+					Kind:  KindArray,
+					Elem:  rTyp,
+					Count: int64(dataqsiz),
+					Size:  rTyp.Size * int64(dataqsiz),
+				}
+				add(r.ReadPtr(buf), typ, int64(dataqsiz))
+			}
 			p.typeObject(a.Add(f.Off), f.Type, r, add)
 		}
 	default:
