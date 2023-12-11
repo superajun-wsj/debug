@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/goretk/gore"
 	"golang.org/x/debug/internal/core"
 )
 
@@ -49,6 +50,9 @@ type Process struct {
 	// map from runtime type name to the set of *Type with that name
 	// Used to find candidates to put in the runtimeMap map.
 	runtimeNameMap map[string][]*Type
+
+	// type info parsed from binary's module data.
+	moduleTypeMap map[string]*gore.GoType
 
 	// memory usage by category
 	stats *Stats
@@ -145,6 +149,7 @@ func Core(proc *core.Process) (p *Process, err error) {
 
 	// Initialize everything that just depends on DWARF.
 	p.readDWARFTypes()
+	p.readModuleDataTypes()
 	p.readRuntimeConstants()
 	p.readGlobals()
 

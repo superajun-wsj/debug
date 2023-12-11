@@ -37,7 +37,9 @@ const (
 
 // A Process represents the state of the process that core dumped.
 type Process struct {
-	meta metadata // basic metadata about the core
+	base, exePath string
+	origExePath   string
+	meta          metadata // basic metadata about the core
 
 	entryPoint Address
 	args       string    // first part of args retrieved from NT_PRPSINFO
@@ -113,6 +115,11 @@ func newMetadata(coreElf *elf.File) (metadata, error) {
 	meta.littleEndian = meta.byteOrder.String() == "LittleEndian"
 
 	return meta, nil
+}
+
+// ExePath gets binary's path info.
+func (p *Process) ExePath() (string, string, string) {
+	return p.base, p.exePath, p.origExePath
 }
 
 // Mappings returns a list of virtual memory mappings for p.
@@ -340,17 +347,20 @@ func Core(corePath, base, exePath string) (*Process, error) {
 	}
 
 	p := &Process{
-		meta:       meta,
-		entryPoint: entryPoint,
-		args:       args,
-		threads:    threads,
-		memory:     mem,
-		pageTable:  pageTable,
-		syms:       syms,
-		symErr:     symErr,
-		dwarf:      dwarf,
-		dwarfErr:   dwarfErr,
-		warnings:   warnings,
+		base:        base,
+		exePath:     exePath,
+		origExePath: origExePath,
+		meta:        meta,
+		entryPoint:  entryPoint,
+		args:        args,
+		threads:     threads,
+		memory:      mem,
+		pageTable:   pageTable,
+		syms:        syms,
+		symErr:      symErr,
+		dwarf:       dwarf,
+		dwarfErr:    dwarfErr,
+		warnings:    warnings,
 	}
 
 	return p, nil

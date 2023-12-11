@@ -7,6 +7,8 @@ package gocore
 import (
 	"debug/dwarf"
 	"fmt"
+	"github.com/goretk/gore"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -14,6 +16,37 @@ import (
 
 	"golang.org/x/debug/internal/core"
 )
+
+// read module data types from binary.
+func (p *Process) readModuleDataTypes() {
+	base, exePath, origExePath := p.proc.ExePath()
+	var typesModuleFile *gore.GoFile
+	var moduleTypes []*gore.GoType
+	var err error
+	if exePath != "" {
+		if typesModuleFile, err = gore.Open(exePath); err != nil {
+			panic(fmt.Errorf("failed to open executable file: %v", err))
+		}
+	} else {
+		typesModuleFile, err = gore.Open(filepath.Join(base, origExePath))
+		if err != nil {
+			panic(fmt.Errorf("failed to open executable file: %v", err))
+		}
+	}
+	if moduleTypes, err = typesModuleFile.GetTypes(); err != nil {
+		panic(fmt.Errorf("failed to parse types from file: %v", err))
+	}
+	p.moduleTypeMap = make(map[string]*gore.GoType)
+	for _, value := range moduleTypes {
+		p.moduleTypeMap[value.Name] = value
+	}
+	defer func(typesModuleFile *gore.GoFile) {
+		err := typesModuleFile.Close()
+		if err != nil {
+
+		}
+	}(typesModuleFile)
+}
 
 // read DWARF types from core dump.
 func (p *Process) readDWARFTypes() {
