@@ -52,7 +52,12 @@ type Process struct {
 	runtimeNameMap map[string][]*Type
 
 	// type info parsed from binary's module data.
-	moduleTypeMap map[string]*gore.GoType
+	moduleAddrOff              int64
+	moduleData                 gore.Moduledata
+	moduleTypes                []*gore.GoType
+	moduleTypeMapByAddr        map[uint64]*gore.GoType
+	moduleTypeMapByGoTypeCache map[*gore.GoType]*Type
+	moduleTypeMapByName        map[string][]*gore.GoType
 
 	// memory usage by category
 	stats *Stats
@@ -149,7 +154,6 @@ func Core(proc *core.Process) (p *Process, err error) {
 
 	// Initialize everything that just depends on DWARF.
 	p.readDWARFTypes()
-	p.readModuleDataTypes()
 	p.readRuntimeConstants()
 	p.readGlobals()
 
@@ -174,6 +178,7 @@ func Core(proc *core.Process) (p *Process, err error) {
 	p.is117OrGreater = p.findType("runtime._func").HasField("flag")
 
 	p.readModules()
+	p.readModuleDataTypes()
 	p.readHeap()
 	p.readGs()
 	p.readStackVars() // needs to be after readGs.

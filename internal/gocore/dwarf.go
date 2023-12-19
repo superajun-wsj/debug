@@ -21,7 +21,6 @@ import (
 func (p *Process) readModuleDataTypes() {
 	base, exePath, origExePath := p.proc.ExePath()
 	var typesModuleFile *gore.GoFile
-	var moduleTypes []*gore.GoType
 	var err error
 	if exePath != "" {
 		if typesModuleFile, err = gore.Open(exePath); err != nil {
@@ -33,13 +32,30 @@ func (p *Process) readModuleDataTypes() {
 			panic(fmt.Errorf("failed to open executable file: %v", err))
 		}
 	}
-	if moduleTypes, err = typesModuleFile.GetTypes(); err != nil {
+
+	if p.moduleData, err = typesModuleFile.Moduledata(); err != nil {
+		panic(fmt.Errorf("failed to parse module data from file: %v", err))
+	}
+
+	// resume binary is always the primary one which include main function.
+	p.moduleAddrOff = p.modules[0].types.Sub(core.Address(p.moduleData.Types().Address))
+
+	if p.moduleTypes, err = typesModuleFile.GetTypes(); err != nil {
 		panic(fmt.Errorf("failed to parse types from file: %v", err))
 	}
-	p.moduleTypeMap = make(map[string]*gore.GoType)
-	for _, value := range moduleTypes {
-		p.moduleTypeMap[value.Name] = value
+	p.moduleTypeMapByName = make(map[string][]*gore.GoType)
+	p.moduleTypeMapByAddr = make(map[uint64]*gore.GoType)
+	p.moduleTypeMapByGoTypeCache = make(map[*gore.GoType]*Type)
+	for _, value := range p.moduleTypes {
+		p.moduleTypeMapByAddr[value.Addr] = value
+		if _, ok := p.moduleTypeMapByName[value.Name]; ok {
+			p.moduleTypeMapByName[value.Name] = append(p.moduleTypeMapByName[value.Name], value)
+		} else {
+			p.moduleTypeMapByName[value.Name] = make([]*gore.GoType, 1)
+			p.moduleTypeMapByName[value.Name][0] = value
+		}
 	}
+
 	defer func(typesModuleFile *gore.GoFile) {
 		err := typesModuleFile.Close()
 		if err != nil {
@@ -215,32 +231,32 @@ func (p *Process) readDWARFTypes() {
 	if p.runtimeNameMap["runtime.specialfinalizer"] == nil {
 		special := p.findType("runtime.special")
 		p.runtimeNameMap["runtime.specialfinalizer"] = []*Type{
-			&Type{
+			{
 				Name: "runtime.specialfinalizer",
 				Size: special.Size + 4*p.proc.PtrSize(),
 				Kind: KindStruct,
 				Fields: []Field{
-					Field{
+					{
 						Name: "special",
 						Off:  0,
 						Type: special,
 					},
-					Field{
+					{
 						Name: "fn",
 						Off:  special.Size,
 						Type: p.findType("*runtime.funcval"),
 					},
-					Field{
+					{
 						Name: "nret",
 						Off:  special.Size + p.proc.PtrSize(),
 						Type: p.findType("uintptr"),
 					},
-					Field{
+					{
 						Name: "fint",
 						Off:  special.Size + 2*p.proc.PtrSize(),
 						Type: p.findType("*runtime._type"),
 					},
-					Field{
+					{
 						Name: "fn",
 						Off:  special.Size + 3*p.proc.PtrSize(),
 						Type: p.findType("*runtime.ptrtype"),

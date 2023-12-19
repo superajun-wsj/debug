@@ -6,19 +6,21 @@ package gocore
 
 import (
 	"fmt"
+	"github.com/goretk/gore"
+	"golang.org/x/debug/internal/core"
+	"reflect"
 	"regexp"
 	"strings"
-
-	"golang.org/x/debug/internal/core"
 )
 
 // A Type is the representation of the type of a Go object.
 // Types are not necessarily canonical.
 // Names are opaque; do not depend on the format of the returned name.
 type Type struct {
-	Name string
-	Size int64
-	Kind Kind
+	Package string
+	Name    string
+	Size    int64
+	Kind    Kind
 
 	// Fields only valid for a subset of kinds.
 	Count  int64   // for kind == KindArray
@@ -135,6 +137,129 @@ func readNameLen(p *Process, a core.Address) (int64, int64) {
 	}
 }
 
+func kindToSize(p *Process, kind reflect.Kind) int {
+	switch kind {
+	case reflect.Bool, reflect.Int8, reflect.Uint8:
+		return 1
+	case reflect.Int16, reflect.Uint16:
+		return 2
+	case reflect.Int32, reflect.Uint32, reflect.Float32:
+		return 4
+	case reflect.Int64, reflect.Uint64, reflect.Float64, reflect.Complex64:
+		return 8
+	case reflect.Int, reflect.Uint, reflect.Uintptr:
+		return int(p.proc.PtrSize())
+	case reflect.Complex128:
+		return 16
+	}
+	panic("invalid type kind")
+}
+
+// Convert the address of a runtime._type to a *Type.
+// runtime._type is parsed from binary's module data.
+// _type is runtime type address, dataPtr is runtime data address.
+// Fill in fields of types. Postponed until now so we're sure
+// we have all the Types allocated and available.
+func (p *Process) typeConvert(_type *gore.GoType) *Type {
+	var _typeConvert *Type
+	// try to get Type by cache
+	if value, ok := p.moduleTypeMapByGoTypeCache[_type]; ok {
+		_typeConvert = value
+		return _typeConvert
+	} else {
+		_typeConvert = &Type{Package: _type.PackagePath, Name: _type.Name}
+		// cache it by gore.GoType's address.
+		p.moduleTypeMapByGoTypeCache[_type] = _typeConvert
+	}
+
+	switch _type.Kind {
+	case reflect.Array:
+		_typeConvert.Kind = KindArray
+		_typeConvert.Size = int64(_type.Size)
+		_typeConvert.Count = int64(_type.Length)
+		_typeConvert.Elem = p.typeConvert(_type.Element)
+	case reflect.Chan:
+		_typeConvert.Kind = KindPtr
+		_typeConvert.Size = int64(_type.Size)
+		// make a copy of hchan struct.
+		tmpElem := *(p.typeConvert(p.moduleTypeMapByName["runtime.hchan"][0]))
+		_typeConvert.Elem = &tmpElem
+		for index, field := range _typeConvert.Elem.Fields {
+			if field.Name == "buf" {
+				tmpType := *field.Type
+				_typeConvert.Elem.Fields[index].Type = &tmpType
+				_typeConvert.Elem.Fields[index].Type.Elem = p.typeConvert(_type.Element)
+				break
+			}
+		}
+	case reflect.Map:
+		// special process in a struct as field.
+		_typeConvert.Kind = KindPtr
+		// make a copy of hmap struct.
+		tmpElem := *p.typeConvert(p.moduleTypeMapByName["runtime.hmap"][0])
+		_typeConvert.Elem = &tmpElem
+		for index, field := range _typeConvert.Elem.Fields {
+			if field.Name == "buckets" {
+				tmpType := *field.Type
+				_typeConvert.Elem.Fields[index].Type = &tmpType
+				_typeConvert.Elem.Fields[index].Type.Elem = p.typeConvert(_type.Bucket)
+				break
+			}
+		}
+	case reflect.Func:
+		_typeConvert.Kind = KindFunc
+	case reflect.Interface:
+		if _type.Methods == nil || len(_type.Methods) == 0x0 {
+			// runtime.eface case
+			_typeConvert.Kind = KindEface
+			_typeConvert.Name = "runtime.eface"
+		} else {
+			// runtime.iface case
+			_typeConvert.Kind = KindIface
+			_typeConvert.Name = "runtime.iface"
+		}
+	case reflect.Pointer:
+		_typeConvert.Kind = KindPtr
+		_typeConvert.Elem = p.typeConvert(_type.Element)
+	case reflect.Slice:
+		_typeConvert.Kind = KindSlice
+		_typeConvert.Size = int64(_type.Size)
+		_typeConvert.Elem = p.typeConvert(_type.Element)
+	case reflect.String:
+		_typeConvert.Kind = KindString
+		_typeConvert.Size = int64(_type.Size)
+		_typeConvert.Elem = p.typeConvert(p.moduleTypeMapByName["uint8"][0])
+	case reflect.Struct:
+		_typeConvert.Kind = KindStruct
+		_typeConvert.Size = int64(_type.Size)
+		_typeConvert.Fields = make([]Field, len(_type.Fields))
+		for index, f := range _type.Fields {
+			_typeConvert.Fields[index] = Field{Name: f.FieldName, Off: int64(f.FieldOffset), Type: p.typeConvert(f.Type)}
+		}
+	case reflect.UnsafePointer:
+		_typeConvert.Kind = KindPtr
+	case reflect.Bool:
+		_typeConvert.Kind = KindBool
+		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
+	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
+		_typeConvert.Kind = KindInt
+		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
+	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint, reflect.Uintptr:
+		_typeConvert.Kind = KindUint
+		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
+	case reflect.Float32, reflect.Float64:
+		_typeConvert.Kind = KindFloat
+		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
+	case reflect.Complex64, reflect.Complex128:
+		_typeConvert.Kind = KindComplex
+		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
+	default:
+		// should never reach here, just panic if it happens.
+		panic("Unknown type kind")
+	}
+	return _typeConvert
+}
+
 // Convert the address of a runtime._type to a *Type.
 // The "d" is the address of the second field of an interface, used to help disambiguate types.
 // Guaranteed to return a non-nil *Type.
@@ -228,6 +353,9 @@ func (p *Process) runtimeType2Type(a core.Address, d core.Address) *Type {
 		// For example, [32]uint8 appears twice.
 		// TODO: investigate the reason for this duplication.
 		t = candidates[0]
+	} else if value, ok := p.moduleTypeMapByAddr[uint64(a.SubOff(p.moduleAddrOff))]; ok && m != nil && m == p.modules[0] {
+		// transform _type address from binary base to runtime base.
+		t = p.typeConvert(value)
 	} else {
 		// There's no corresponding DWARF type.  Make our own.
 		t = &Type{Name: name, Size: size, Kind: KindStruct}
@@ -706,7 +834,10 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 			p.typeObject(a.Add(i*n), t.Elem, r, add)
 		}
 	case KindStruct:
-		if strings.HasPrefix(t.Name, "hash<") {
+		if t.Name == "runtime.hmap" {
+			fmt.Println("Hello")
+		}
+		if strings.HasPrefix(t.Name, "hash<") || t.Name == "runtime.hmap" {
 			// Special case - maps have a pointer to the first bucket
 			// but it really types all the buckets (like a slice would).
 			var bPtr core.Address
@@ -738,20 +869,20 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 				}
 			}
 			// hchan.buf(in chan) is an unsafe.pointer to an [dataqsiz]elemtype.
-			if strings.HasPrefix(t.Name, "hchan<") && f.Name == "buf" && f.Type.Kind == KindPtr {
-				elemType := p.proc.ReadPtr(a.Add(t.field("elemtype").Off))
-				buf := a.Add(t.field("buf").Off)
-				rTyp := p.runtimeType2Type(elemType, buf)
-				dataqsiz := p.proc.ReadUintptr(a.Add(t.field("dataqsiz").Off))
-				typ := &Type{
-					Name:  fmt.Sprintf("[%d]%s", int64(dataqsiz), rTyp.Name),
-					Kind:  KindArray,
-					Elem:  rTyp,
-					Count: int64(dataqsiz),
-					Size:  rTyp.Size * int64(dataqsiz),
-				}
-				add(r.ReadPtr(buf), typ, int64(dataqsiz))
-			}
+			//if strings.HasPrefix(t.Name, "hchan<") && f.Name == "buf" && f.Type.Kind == KindPtr {
+			//	elemType := p.proc.ReadPtr(a.Add(t.field("elemtype").Off))
+			//	buf := a.Add(t.field("buf").Off)
+			//	rTyp := p.runtimeType2Type(elemType, buf)
+			//	dataqsiz := p.proc.ReadUintptr(a.Add(t.field("dataqsiz").Off))
+			//	typ := &Type{
+			//		Name:  fmt.Sprintf("[%d]%s", int64(dataqsiz), rTyp.Name),
+			//		Kind:  KindArray,
+			//		Elem:  rTyp,
+			//		Count: int64(dataqsiz),
+			//		Size:  rTyp.Size * int64(dataqsiz),
+			//	}
+			//	add(r.ReadPtr(buf), typ, int64(dataqsiz))
+			//}
 			p.typeObject(a.Add(f.Off), f.Type, r, add)
 		}
 	default:

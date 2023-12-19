@@ -12,6 +12,14 @@ func (a Address) Sub(b Address) int64 {
 	return int64(a - b)
 }
 
+// SubOff sub an address offset.
+func (a Address) SubOff(off int64) Address {
+	if off > 0 {
+		return a - Address(off)
+	}
+	return a.Add(-off)
+}
+
 // Add adds x to address a.
 func (a Address) Add(x int64) Address {
 	return a + Address(x)

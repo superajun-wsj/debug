@@ -2,8 +2,6 @@ module golang.org/x/debug
 
 go 1.21
 
-toolchain go1.21.3
-
 require (
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e
 	github.com/goretk/gore v0.11.3
