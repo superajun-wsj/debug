@@ -21,6 +21,7 @@ type Type struct {
 	Name    string
 	Size    int64
 	Kind    Kind
+	Flag    bool
 
 	// Fields only valid for a subset of kinds.
 	Count  int64   // for kind == KindArray
@@ -167,7 +168,7 @@ func (p *Process) typeConvert(_type *gore.GoType) *Type {
 		_typeConvert = value
 		return _typeConvert
 	} else {
-		_typeConvert = &Type{Package: _type.PackagePath, Name: _type.Name}
+		_typeConvert = &Type{Package: _type.PackagePath, Name: _type.Name, Flag: true}
 		// cache it by gore.GoType's address.
 		p.moduleTypeMapByGoTypeCache[_type] = _typeConvert
 	}
@@ -195,6 +196,7 @@ func (p *Process) typeConvert(_type *gore.GoType) *Type {
 	case reflect.Map:
 		// special process in a struct as field.
 		_typeConvert.Kind = KindPtr
+		_typeConvert.Size = int64(_type.Size)
 		// make a copy of hmap struct.
 		tmpElem := *p.typeConvert(p.moduleTypeMapByName["runtime.hmap"][0])
 		_typeConvert.Elem = &tmpElem
@@ -208,18 +210,22 @@ func (p *Process) typeConvert(_type *gore.GoType) *Type {
 		}
 	case reflect.Func:
 		_typeConvert.Kind = KindFunc
+		_typeConvert.Size = int64(_type.Size)
 	case reflect.Interface:
 		if _type.Methods == nil || len(_type.Methods) == 0x0 {
 			// runtime.eface case
 			_typeConvert.Kind = KindEface
 			_typeConvert.Name = "runtime.eface"
+			_typeConvert.Size = int64(_type.Size)
 		} else {
 			// runtime.iface case
 			_typeConvert.Kind = KindIface
 			_typeConvert.Name = "runtime.iface"
+			_typeConvert.Size = int64(_type.Size)
 		}
 	case reflect.Pointer:
 		_typeConvert.Kind = KindPtr
+		_typeConvert.Size = int64(_type.Size)
 		_typeConvert.Elem = p.typeConvert(_type.Element)
 	case reflect.Slice:
 		_typeConvert.Kind = KindSlice
@@ -238,6 +244,7 @@ func (p *Process) typeConvert(_type *gore.GoType) *Type {
 		}
 	case reflect.UnsafePointer:
 		_typeConvert.Kind = KindPtr
+		_typeConvert.Size = int64(_type.Size)
 	case reflect.Bool:
 		_typeConvert.Kind = KindBool
 		_typeConvert.Size = int64(kindToSize(p, _type.Kind))
@@ -834,29 +841,17 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 			p.typeObject(a.Add(i*n), t.Elem, r, add)
 		}
 	case KindStruct:
-		if t.Name == "runtime.hmap" {
-			fmt.Println("Hello")
-		}
-		if strings.HasPrefix(t.Name, "hash<") || t.Name == "runtime.hmap" {
-			// Special case - maps have a pointer to the first bucket
-			// but it really types all the buckets (like a slice would).
-			var bPtr core.Address
-			var bTyp *Type
-			var n int64
-			for _, f := range t.Fields {
-				if f.Name == "buckets" {
-					bPtr = p.proc.ReadPtr(a.Add(f.Off))
-					bTyp = f.Type.Elem
-				}
-				if f.Name == "B" {
-					n = int64(1) << p.proc.ReadUint8(a.Add(f.Off))
-				}
-			}
-			add(bPtr, bTyp, n)
-			// TODO: also oldbuckets
-		}
 		// TODO: also special case for channels?
 		for _, f := range t.Fields {
+			// Special case - maps have a pointer to the first bucket
+			// but it really types all the buckets (like a slice would).
+			if (strings.HasPrefix(t.Name, "hash<") || t.Name == "runtime.hmap") && f.Name == "buckets" {
+				bPtr := p.proc.ReadPtr(a.Add(f.Off))
+				bTyp := f.Type.Elem
+				n := p.proc.ReadUint8(a.Add(t.field("B").Off))
+				add(bPtr, bTyp, int64(n))
+				continue
+			}
 			// sync.entry.p(in sync.map) is an unsafe.pointer to an empty interface.
 			if t.Name == "sync.entry" && f.Name == "p" && f.Type.Kind == KindPtr && f.Type.Elem == nil {
 				ptr := r.ReadPtr(a.Add(f.Off))
@@ -866,23 +861,21 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 						Kind: KindEface,
 					}
 					add(ptr, typ, 1)
+					continue
 				}
 			}
 			// hchan.buf(in chan) is an unsafe.pointer to an [dataqsiz]elemtype.
-			//if strings.HasPrefix(t.Name, "hchan<") && f.Name == "buf" && f.Type.Kind == KindPtr {
-			//	elemType := p.proc.ReadPtr(a.Add(t.field("elemtype").Off))
-			//	buf := a.Add(t.field("buf").Off)
-			//	rTyp := p.runtimeType2Type(elemType, buf)
-			//	dataqsiz := p.proc.ReadUintptr(a.Add(t.field("dataqsiz").Off))
-			//	typ := &Type{
-			//		Name:  fmt.Sprintf("[%d]%s", int64(dataqsiz), rTyp.Name),
-			//		Kind:  KindArray,
-			//		Elem:  rTyp,
-			//		Count: int64(dataqsiz),
-			//		Size:  rTyp.Size * int64(dataqsiz),
-			//	}
-			//	add(r.ReadPtr(buf), typ, int64(dataqsiz))
-			//}
+			if (strings.HasPrefix(t.Name, "hchan<") || t.Name == "runtime.hchan") && f.Name == "buf" && f.Type.Kind == KindPtr {
+				elemType := p.proc.ReadPtr(a.Add(t.field("elemtype").Off))
+				buf := a.Add(t.field("buf").Off)
+				rTyp := p.runtimeType2Type(elemType, buf)
+				elemsize := p.proc.ReadUintptr(a.Add(t.field("elemsize").Off))
+				dataqsiz := p.proc.ReadUintptr(a.Add(t.field("dataqsiz").Off))
+				if elemsize*dataqsiz > 0 {
+					add(r.ReadPtr(buf), rTyp, int64(dataqsiz))
+					continue
+				}
+			}
 			p.typeObject(a.Add(f.Off), f.Type, r, add)
 		}
 	default:
