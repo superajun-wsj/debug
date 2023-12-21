@@ -805,6 +805,18 @@ func (p *Process) typeObject(a core.Address, t *Type, r reader, add func(core.Ad
 	case KindPtr:
 		if t.Elem != nil { // unsafe.Pointer has a nil Elem field.
 			add(r.ReadPtr(a), t.Elem, 1)
+		} else {
+			// handle unsafe.Pointer case.
+			if heapInfo := p.findHeapInfo(r.ReadPtr(a)); heapInfo != nil && !heapInfo.noscan && heapInfo.size >= 24 {
+				if result := p.typeMatchCheck(r.ReadPtr(a)); result != nil {
+					if result != nil && len(result.single) == 1 && len(result.array) == 0 {
+						//add(r.ReadPtr(a), p.typeConvert(result.single[0]), 1)
+					}
+					if result != nil && len(result.single) == 0 && len(result.array) == 1 {
+						//add(r.ReadPtr(a), p.typeConvert(result.array[0]), 1)
+					}
+				}
+			}
 		}
 	case KindFunc:
 		// The referent is a closure. We don't know much about the

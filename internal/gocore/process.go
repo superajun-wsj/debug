@@ -58,6 +58,7 @@ type Process struct {
 	moduleTypeMapByAddr        map[uint64]*gore.GoType
 	moduleTypeMapByGoTypeCache map[*gore.GoType]*Type
 	moduleTypeMapByName        map[string][]*gore.GoType
+	spanClassModuleType        [numSpanClasses][]*gore.GoType
 
 	// memory usage by category
 	stats *Stats

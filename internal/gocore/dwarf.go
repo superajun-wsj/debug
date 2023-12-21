@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/debug/internal/core"
 )
@@ -48,6 +49,7 @@ func (p *Process) readModuleDataTypes() {
 	p.moduleTypeMapByGoTypeCache = make(map[*gore.GoType]*Type)
 	for _, value := range p.moduleTypes {
 		p.moduleTypeMapByAddr[value.Addr] = value
+		p.buildTypeByClassSize(value)
 		if _, ok := p.moduleTypeMapByName[value.Name]; ok {
 			p.moduleTypeMapByName[value.Name] = append(p.moduleTypeMapByName[value.Name], value)
 		} else {
@@ -693,3 +695,57 @@ Sometimes there is even a chain of identically-named typedefs. I have no idea wh
 main.XXX -> main.XXX -> struct runtime.iface
 
 */
+
+// divRoundUp returns ceil(n / a).
+func divRoundUp(n, a uintptr) uintptr {
+	// a is generally a power of two. This will get inlined and
+	// the compiler will optimize the division.
+	return (n + a - 1) / a
+}
+
+// bool2int returns 0 if x is false or 1 if x is true.
+func bool2int(x bool) int {
+	// Avoid branches. In the SSA compiler, this compiles to
+	// exactly what you would want it to.
+	return int(uint8(*(*uint8)(unsafe.Pointer(&x))))
+}
+func (sc spanClass) sizeclass() int8 {
+	return int8(sc >> 1)
+}
+func makeSpanClass(sizeclass uint8, noscan bool) spanClass {
+	return spanClass(sizeclass<<1) | spanClass(bool2int(noscan))
+}
+func (p *Process) calSizeClass(size int) int8 {
+	if size < maxTinySize {
+		return tinySizeClass
+	} else if size > maxSmallSize {
+		return 0
+	} else {
+		var sizeclass uint8
+		if size <= smallSizeMax-8 {
+			sizeclass = size_to_class8[divRoundUp(uintptr(size), smallSizeDiv)]
+		} else {
+			sizeclass = size_to_class128[divRoundUp(uintptr(size-smallSizeMax), largeSizeDiv)]
+		}
+		return int8(sizeclass)
+	}
+}
+func (p *Process) calSpanClass(size int, noscan bool) spanClass {
+	if noscan && size < maxTinySize {
+		return tinySpanClass
+	} else if size > maxSmallSize {
+		return makeSpanClass(0, noscan)
+	} else {
+		sizeclass := p.calSizeClass(size)
+		return makeSpanClass(uint8(sizeclass), noscan)
+	}
+}
+func (p *Process) buildTypeByClassSize(_type *gore.GoType) {
+	noscan := _type.PtrBytes == 0x0
+	size := _type.Size
+	spanclass := p.calSpanClass(int(size), noscan)
+	if p.spanClassModuleType[spanclass] == nil {
+		p.spanClassModuleType[spanclass] = make([]*gore.GoType, 0)
+	}
+	p.spanClassModuleType[spanclass] = append(p.spanClassModuleType[spanclass], _type)
+}
